@@ -1,17 +1,13 @@
-
 import json
 import random
-from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-
+from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler, AutoencoderKL
 from PIL.Image import Image
 from collections import defaultdict
 import torch
 from safetensors.torch import load_file
-import copy
 from datetime import datetime
-from collections import deque
 import os
-
+import copy
 
 def load_lora_weights(pipeline, checkpoint_path, multiplier, device, dtype):
     LORA_PREFIX_UNET = "lora_unet"
@@ -69,70 +65,102 @@ def load_lora_weights(pipeline, checkpoint_path, multiplier, device, dtype):
 
     return pipeline
 
-# pipe = StableDiffusionPipeline.from_single_file(
-#     "/Users/guomingfei/Downloads/GenshinLora/anything-v3-fp16-pruned.safetensors"
-# )
-from diffusers.models import AutoencoderKL
-from diffusers import StableDiffusionPipeline
+def generate_mixed_lora_images(
+    base_model_path,
+    lora_config_path,
+    save_dir,
+    device="cuda:0",
+    num_combinations=100,
+    num_inference_steps=50,
+    lora_multiplier=1.0,
+    negative_prompt="",
+    additional_prompt=""
+):
+    # Create save directories if they don't exist
+    os.makedirs(os.path.join(save_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "metadata"), exist_ok=True)
 
-characters = json.load(open("lora.json", "r", encoding="utf-8"))
-safetensor_dir = "~/GenshinLora"
-save_dir = "~/GenshinGens"
-negative_prompt = "EasyNegative, disembodied limb, worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, realistic photo, extra eyes, huge eyes, 2girl, amputation, disconnected limbs"
-general_positive_prompt="Solo, beautiful, Detailed eyes, natural light, 64k resolution, beautiful, ultra detailed, colorful, rich deep color, 16k, glow effects"
-
-
-# model = "CompVis/stable-diffusion-v1-4"
-vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
-# pipe = StableDiffusionPipeline.from_pretrained(model, vae=vae)
-
-pipe = StableDiffusionPipeline.from_single_file(
-    "../anything-v4.5-pruned.safetensors", vae=vae, device=device).to(device)
-pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-# negative_prompt = "EasyNegative, disembodied limb, worst quality, normal quality, low quality, low res, blurry, text, watermark, logo, banner, extra digits, cropped, jpeg artifacts, signature, username, error, sketch ,duplicate, ugly, monochrome, horror, geometry, mutation, disgusting, bad anatomy, bad hands, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, realistic photo, extra eyes, huge eyes, 2girl, amputation, disconnected limbs"
-# general_positive_prompt=", Solo, beautiful, Detailed eyes, natural light, 64k resolution, beautiful, ultra detailed, colorful, rich deep color, 16k, glow effects"
-device = "cuda:0"
-comb_number = 1000
-while comb_number:
-    print("generating ", 1000 - comb_number)
-    # for each combination generate 5 images
-    picked_character = random.sample(characters, 2)
-
-    prompt = ""
-    answer = []
-    for character in picked_character:
-        answer.append(character['name'].lower())
-        prompt += character['prompt'] + ', '
-        lora_model = safetensor_dir+'/'+character['path']
-        print(lora_model)
+    # Load model and configuration
+    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
+    pipe = StableDiffusionPipeline.from_single_file(base_model_path, vae=vae, device=device).to(device)
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     
-        new_pipe = load_lora_weights(new_pipe, lora_model, 1.0, device, torch.float32)
+    # Load LoRA configurations
+    lora_configs = json.load(open(lora_config_path, "r", encoding="utf-8"))
+
+    for i in range(num_combinations):
+        print(f"Generating combination {i+1}/{num_combinations}")
+        
+        # Pick random LoRAs to mix
+        picked_loras = random.sample(lora_configs, 2)
+        
+        # Reset pipeline for new combination
+        new_pipe = copy.deepcopy(pipe)
+        
+        prompt = ""
+        metadata = []
+        
+        # Load and apply each LoRA
+        for lora in picked_loras:
+            metadata.append(lora['name'].lower())
+            prompt += lora['prompt'] + ', '
+            lora_path = os.path.join(os.path.dirname(lora_config_path), lora['path'])
+            new_pipe = load_lora_weights(new_pipe, lora_path, lora_multiplier, device, torch.float32)
+
+        # Add additional prompt if provided
+        full_prompt = prompt + ',' + additional_prompt if additional_prompt else prompt
+
+        # Generate image
+        image = generate_image(new_pipe, full_prompt, negative_prompt, num_inference_steps, device)
+        
+        # Save results
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        image_file_path = os.path.join(save_dir, "images", f"{timestamp}.png")
+        metadata_path = os.path.join(save_dir, "metadata", f"{timestamp}.json")
+        
+        image.save(image_file_path)
+        
+        # Save metadata
+        metadata_info = {
+            "timestamp": timestamp,
+            "image_path": image_file_path,
+            "loras_used": metadata,
+            "prompt": full_prompt,
+            "negative_prompt": negative_prompt
+        }
+        json.dump(metadata_info, open(metadata_path, "w", encoding="utf-8"))
+
+def generate_image(pipe, prompt, negative_prompt, num_inference_steps, device):
+    max_length = pipe.tokenizer.model_max_length
     
-    max_length = new_pipe.tokenizer.model_max_length
-    input_ids = new_pipe.tokenizer(prompt + ',' + general_positive_prompt, return_tensors="pt").input_ids
-    # input_ids.to(device)
-    negative_ids = new_pipe.tokenizer(negative_prompt, truncation=True, padding="max_length", max_length=input_ids.shape[-1], return_tensors="pt").input_ids                                                                                                     
+    input_ids = pipe.tokenizer(prompt, return_tensors="pt").input_ids
+    negative_ids = pipe.tokenizer(
+        negative_prompt, 
+        truncation=True, 
+        padding="max_length", 
+        max_length=input_ids.shape[-1], 
+        return_tensors="pt"
+    ).input_ids
+
     concat_embeds = []
     neg_embeds = []
     for i in range(0, input_ids.shape[-1], max_length):
-        concat_embeds.append(new_pipe.text_encoder(input_ids[:,i: i + max_length].to(device))[0])
-        neg_embeds.append(new_pipe.text_encoder(negative_ids[:, i: i + max_length].to(device))[0])
-        
+        concat_embeds.append(pipe.text_encoder(input_ids[:,i: i + max_length].to(device))[0])
+        neg_embeds.append(pipe.text_encoder(negative_ids[:, i: i + max_length].to(device))[0])
+    
     prompt_embeds = torch.cat(concat_embeds, dim=1).to(device)
     negative_prompt_embeds = torch.cat(neg_embeds, dim=1).to(device)
 
-    # 3. Forward
-    image = new_pipe(prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_prompt_embeds, num_inference_steps=50).images[0]
-    image_datetime = datetime.now().strftime('%Y%m%d-%H%M%S')
-    image_file_path = save_dir + "/images/" + prompt.replace(' ', '#') + '@' + image_datetime + ".png"
-    image_info_path = save_dir + "/jsons/" + image_datetime + ".json"
-    
-    image.save(image_file_path)
-    
-    image_info = {
-        "image_upload": False,
-        "image_url": None,
-        "image_file_path": image_file_path,
-        "answer": answer
-    }
-    json.dump(image_info, open(image_info_path, "w", encoding="utf-8"))
+    return pipe(
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        num_inference_steps=num_inference_steps
+    ).images[0]
+
+if __name__ == "__main__":
+    generate_mixed_lora_images(
+        base_model_path="path/to/base/model.safetensors",
+        lora_config_path="loras.json",
+        save_dir="outputs",
+        num_combinations=100
+    )

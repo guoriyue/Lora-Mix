@@ -1,8 +1,8 @@
-#Character LoRA Mixer
+# Character LoRA Mixer
 
 A tool for generating images by randomly mixing two character LoRAs together. Perfect for creating character interactions or crossover images.
 
-###Setup
+### Setup
 
 1. Install requirements:
 pip install torch diffusers transformers safetensors pillow
@@ -25,7 +25,7 @@ pip install torch diffusers transformers safetensors pillow
 ]
 ```
 
-###Usage
+### Usage
 
 ```
 from mix import generate_mixed_lora_images
@@ -42,13 +42,13 @@ generate_mixed_lora_images(
 )
 ```
 
-###Output
+### Output
 
 The script will create:
 - outputs/images/: Generated images with timestamps
 - outputs/metadata/: JSON files containing generation details for each image
 
-###Parameters
+### Parameters
 
 ```
 base_model_path: Path to your Stable Diffusion model
